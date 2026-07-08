@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local configuration
+.env
+.env.*
+
+# Generated experiment artifacts
+runs/
+checkpoints/
+outputs/
+logs/
+wandb/
+
+# Downloaded datasets. Keep only tiny examples in git.
+data/*
+!data/
+!data/tiny_math.jsonl
+
+# Model/checkpoint artifacts
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+.DS_Store
