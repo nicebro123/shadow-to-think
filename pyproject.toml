@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shadow-to-think"
+version = "0.1.0"
+description = "A research prototype for token-level large-small model collaboration."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.1.0",
+  "transformers>=4.41.0",
+  "accelerate>=0.30.0",
+  "tqdm>=4.66.0",
+  "pyyaml>=6.0.1",
+  "numpy>=1.24.0",
+  "safetensors>=0.4.3",
+  "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+lora = ["peft>=0.11.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

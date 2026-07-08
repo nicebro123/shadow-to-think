@@ -1,0 +1,12 @@
+torch>=2.1.0
+transformers>=4.41.0
+accelerate>=0.30.0
+tqdm>=4.66.0
+pyyaml>=6.0.1
+numpy>=1.24.0
+safetensors>=0.4.3
+# Optional, only needed for direct LoRA training of the student LM.
+peft>=0.11.0
+
+# Optional but needed for vLLM/OpenAI-compatible teacher serving client.
+requests>=2.31.0

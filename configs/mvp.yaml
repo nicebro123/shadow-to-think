@@ -1,0 +1,40 @@
+# Shadow-to-Think v1.0 minimal configuration.
+# Prefer same-tokenizer student/teacher families for token-level alignment.
+student_model: Qwen/Qwen2.5-1.5B-Instruct
+teacher_model: Qwen/Qwen2.5-7B-Instruct
+
+# Teacher backend: transformers or vllm
+teacher_backend: vllm
+teacher_base_url: http://localhost:8000/v1
+teacher_api_key: EMPTY
+
+# Data
+dataset_path: data/train.jsonl
+output_path: runs/qwen_shadow/train_shadow.jsonl
+
+# Generation / collection
+max_prompt_tokens: 2048
+draft_len: 32
+shadow_len: 32
+rollout_len: 96
+student_topk: 16
+temperature: 0.0
+min_accept_score: 0.5
+allow_no_gold: false
+
+# Local trigger
+trigger_hidden_size: 64
+trigger_epochs: 3
+trigger_lr: 0.001
+trigger_ckpt: checkpoints/qwen_shadow_trigger.pt
+
+# Hidden selector
+selector_dim: 256
+selector_epochs: 3
+selector_lr: 0.001
+selector_ckpt: checkpoints/qwen_shadow_hidden_selector.pt
+
+# Decode
+decode_mode: shadow
+max_new_tokens: 256
+trigger_threshold: 0.5
