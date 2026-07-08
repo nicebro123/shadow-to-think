@@ -34,12 +34,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--student_topk", type=int, default=16)
     p.add_argument("--trigger_threshold", type=float, default=0.5)
     p.add_argument("--teacher_span_len", type=int, default=1)
+    p.add_argument("--teacher_span_mode", choices=["fixed", "step"], default="fixed")
+    p.add_argument("--teacher_span_min_len", type=int, default=4)
     p.add_argument("--skip_style_divergence", action="store_true")
     p.add_argument("--min_divergence_index", type=int, default=0)
     p.add_argument("--intervention_policy", choices=["selector", "teacher_only"], default="selector")
     p.add_argument("--require_math_signal_divergence", action="store_true")
     p.add_argument("--math_signal_window", type=int, default=8)
     p.add_argument("--max_teacher_calls", type=int, default=None)
+    p.add_argument("--trace_decisions", action="store_true", help="Write trigger scores/features for later protection training.")
     p.add_argument("--temperature", type=float, default=0.0)
     p.add_argument("--max_samples", type=int, default=None)
     p.add_argument("--device", default="auto")
@@ -74,12 +77,15 @@ def main() -> None:
         trigger_threshold=args.trigger_threshold,
         mode=args.mode,
         teacher_span_len=args.teacher_span_len,
+        teacher_span_mode=args.teacher_span_mode,
+        teacher_span_min_len=args.teacher_span_min_len,
         skip_style_divergence=args.skip_style_divergence,
         min_divergence_index=args.min_divergence_index,
         intervention_policy=args.intervention_policy,
         require_math_signal_divergence=args.require_math_signal_divergence,
         math_signal_window=args.math_signal_window,
         max_teacher_calls=args.max_teacher_calls,
+        trace_decisions=args.trace_decisions,
     )
     controller = ShadowDecodeController(
         student.model,
@@ -96,7 +102,16 @@ def main() -> None:
             break
         prompt = infer_prompt(row)
         out = controller.generate(prompt)
-        rows.append({"id": row.get("id"), "prompt": prompt, "output": out["text"], "interventions": out["interventions"], "teacher_calls": out["teacher_calls"]})
+        record = {
+            "id": row.get("id"),
+            "prompt": prompt,
+            "output": out["text"],
+            "interventions": out["interventions"],
+            "teacher_calls": out["teacher_calls"],
+        }
+        if args.trace_decisions:
+            record["decision_trace"] = out.get("decision_trace", [])
+        rows.append(record)
     write_jsonl(args.output_path, rows, append=False)
     summary = {
         "num_examples": len(rows),

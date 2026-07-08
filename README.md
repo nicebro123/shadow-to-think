@@ -192,6 +192,19 @@ python scripts/eval_shadow_decode.py \
 
 This mode calls the teacher on risky chunks, finds the first meaningful divergence, and uses the hidden selector to choose a corrected token from `StudentTopK ∪ {TeacherToken}`.
 
+Two optional controls are useful for reducing harmful interventions:
+
+```bash
+  --teacher_span_mode step \
+  --teacher_span_min_len 4 \
+  --trace_decisions
+```
+
+- `--teacher_span_mode step` injects a teacher span up to a lightweight step
+  boundary instead of always cutting at a fixed token count.
+- `--trace_decisions` stores trigger scores and features so fixed and broken
+  examples can be mined into future gate-training data.
+
 ### Student-only local decoding
 
 ```bash
@@ -207,7 +220,52 @@ python scripts/eval_shadow_decode.py \
 
 This mode does not call the teacher. It uses the distilled trigger and selector to rerank student top-K candidates during generation.
 
-## 6. Optional direct next-token LoRA distillation
+## 6. Analyze Broken and Fixed Cases
+
+After local and shadow decoding, compare outcomes with:
+
+```bash
+python scripts/analyze_shadow_outcomes.py \
+  --dataset_path data/test.jsonl \
+  --local_path runs/qwen_shadow/decode_local.jsonl \
+  --shadow_path runs/qwen_shadow/decode_shadow.jsonl \
+  --output_dir runs/qwen_shadow/outcome_analysis
+```
+
+The script writes:
+
+```text
+summary.json
+cases_all.jsonl
+fixed.jsonl
+broke.jsonl
+kept_correct.jsonl
+missed_wrong.jsonl
+```
+
+For gate training from shadow collection records:
+
+```bash
+python scripts/build_ask_gate_dataset.py \
+  --record_path runs/qwen_shadow/train_shadow.jsonl \
+  --output_path runs/qwen_shadow/ask_gate_relabel_neg2x.jsonl \
+  --negative_per_positive 2
+```
+
+For local-correct protection from traced decode outputs:
+
+```bash
+python scripts/build_trace_gate_dataset.py \
+  --cases_path runs/qwen_shadow/outcome_analysis/cases_all.jsonl \
+  --output_path runs/qwen_shadow/protection_gate_trace_neg2x.jsonl \
+  --negative_per_positive 2
+```
+
+Then train a gate with `scripts/train_trigger.py`. Fixed cases are treated as
+"ask teacher" positives, while broken cases become "do not interrupt the
+student's current route" negatives.
+
+## 7. Optional direct next-token LoRA distillation
 
 ```bash
 python scripts/train_student_next_token_lora.py \

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
@@ -24,6 +25,9 @@ def _append_unique(base: List[int], extra: List[int]) -> List[int]:
     return out
 
 
+STEP_BOUNDARY_RE = re.compile(r"(\n|(?:^|[\s])(?:therefore|thus|hence|so),?\s|[.;:]\s*$)", re.IGNORECASE)
+
+
 @dataclass
 class DecodeConfig:
     max_new_tokens: int = 256
@@ -38,9 +42,12 @@ class DecodeConfig:
     skip_style_divergence: bool = False
     min_divergence_index: int = 0
     intervention_policy: str = "selector"  # selector | teacher_only
+    teacher_span_mode: str = "fixed"  # fixed | step
+    teacher_span_min_len: int = 4
     require_math_signal_divergence: bool = False
     math_signal_window: int = 8
     max_teacher_calls: int | None = None
+    trace_decisions: bool = False
 
 
 class ShadowDecodeController:
@@ -89,9 +96,9 @@ class ShadowDecodeController:
         return int(candidate_ids[idx])
 
     @torch.no_grad()
-    def _trigger_risky(self, prefix_ids: torch.Tensor, position_index: int) -> bool:
+    def _trigger_decision(self, prefix_ids: torch.Tensor, position_index: int) -> Tuple[bool, Optional[Dict[str, Any]]]:
         if self.trigger is None:
-            return True
+            return True, None
         stats = next_token_stats(self.student_model, prefix_ids, topk=self.config.student_topk)
         feats = build_trigger_features(
             stats=stats,
@@ -101,7 +108,40 @@ class ShadowDecodeController:
             tokenizer=self.tokenizer,
         )
         score = trigger_score(self.trigger.to(self.device), torch.tensor(feats, dtype=torch.float32, device=self.device))
-        return score >= self.config.trigger_threshold
+        risky = score >= self.config.trigger_threshold
+        return risky, {
+            "position_index": int(position_index),
+            "trigger_score": float(score),
+            "trigger_threshold": float(self.config.trigger_threshold),
+            "trigger_features": [float(x) for x in feats],
+            "entropy": float(stats["entropy"]),
+            "top1_margin": float(stats["top1_margin"]),
+            "top1_id": int(stats["top1_id"]),
+            "top1_text": self.tokenizer.decode([int(stats["top1_id"])], skip_special_tokens=False),
+            "risky": bool(risky),
+        }
+
+    @torch.no_grad()
+    def _trigger_risky(self, prefix_ids: torch.Tensor, position_index: int) -> bool:
+        risky, _ = self._trigger_decision(prefix_ids, position_index)
+        return risky
+
+    def _teacher_span_ids(self, teacher_shadow: List[int], div_index: int) -> List[int]:
+        """Return the teacher span to inject, including the divergence token."""
+        max_len = max(1, int(self.config.teacher_span_len))
+        fixed_end = min(len(teacher_shadow), int(div_index) + max_len)
+        fixed_span = [int(x) for x in teacher_shadow[int(div_index) : fixed_end]]
+        if self.config.teacher_span_mode != "step" or max_len <= 1:
+            return fixed_span
+
+        min_len = max(1, min(int(self.config.teacher_span_min_len), max_len))
+        best = fixed_span
+        for span_len in range(min_len, len(fixed_span) + 1):
+            candidate = fixed_span[:span_len]
+            text = self.tokenizer.decode(candidate, skip_special_tokens=False)
+            if STEP_BOUNDARY_RE.search(text):
+                return candidate
+        return best
 
     @torch.no_grad()
     def generate(self, prompt: str) -> Dict:
@@ -155,6 +195,7 @@ class ShadowDecodeController:
         cur = encode_prompt(self.tokenizer, prompt, max_prompt_tokens=self.config.max_prompt_tokens, device=self.device)
         generated: List[int] = []
         interventions = []
+        decision_trace = []
         teacher_calls = 0
         while len(generated) < self.config.max_new_tokens:
             if self.config.max_teacher_calls is not None and teacher_calls >= int(self.config.max_teacher_calls):
@@ -172,7 +213,12 @@ class ShadowDecodeController:
                 break
             # The trigger is trained on positions inside a draft, so evaluate it
             # before each accepted student token instead of skipping a whole chunk.
-            if self.trigger is not None and not self._trigger_risky(cur, len(generated) % max(self.config.draft_len, 1)):
+            trigger_position = len(generated) % max(self.config.draft_len, 1)
+            risky, trace = self._trigger_decision(cur, trigger_position)
+            if trace is not None and self.config.trace_decisions:
+                trace.update({"absolute_position": len(generated), "action": "call_teacher" if risky else "keep_student"})
+                decision_trace.append(trace)
+            if self.trigger is not None and not risky:
                 token = greedy_generate_new_ids(
                     self.student_model,
                     cur,
@@ -245,10 +291,10 @@ class ShadowDecodeController:
             selected = self._select_candidate(prefix_at_div, candidate_ids, feats) if self.hidden_selector is not None else int(div.teacher_token_id)
             if self.config.intervention_policy == "teacher_only" and int(selected) != int(div.teacher_token_id):
                 selected = int(div.student_token_id)
-            selected_ids = [int(selected)]
-            if int(selected) == int(div.teacher_token_id) and self.config.teacher_span_len > 1:
-                span_end = min(len(teacher_shadow), div.index + int(self.config.teacher_span_len))
-                selected_ids.extend(int(x) for x in teacher_shadow[div.index + 1 : span_end])
+            if int(selected) == int(div.teacher_token_id):
+                selected_ids = self._teacher_span_ids(teacher_shadow, div.index)
+            else:
+                selected_ids = [int(selected)]
             remaining_slots = self.config.max_new_tokens - len(generated) - len(before)
             selected_ids = selected_ids[: max(1, remaining_slots)]
             generated.extend(before + selected_ids)
@@ -264,6 +310,7 @@ class ShadowDecodeController:
                     "teacher_token_text": div.teacher_text,
                     "selected_token_text": self.tokenizer.decode([int(selected)], skip_special_tokens=False),
                     "selected_span_text": self.tokenizer.decode(selected_ids, skip_special_tokens=False),
+                    "teacher_span_mode": self.config.teacher_span_mode,
                 }
             )
             cur = torch.tensor([prefix_at_div_list + selected_ids], dtype=torch.long, device=self.device)
@@ -274,4 +321,5 @@ class ShadowDecodeController:
             "generated_ids": generated,
             "interventions": interventions,
             "teacher_calls": teacher_calls,
+            "decision_trace": decision_trace,
         }
